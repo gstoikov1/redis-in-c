@@ -1,3 +1,5 @@
+#define _GNU_SOURCE // needed for memmem
+
 #include <assert.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -22,7 +24,8 @@ int conn_sock, nfds, epollfd;
 
 enum request_result {
     SUCCESS,
-    NEED_MORE_DATA
+    NEED_MORE_DATA,
+    INVALLID
 };
 
 struct Client {
@@ -31,15 +34,25 @@ struct Client {
     int buffered;
 };
 
+struct ArgumentNode {
+    char *arg_val;
+    int size;
+
+    struct ArgumentNode *next;
+};
+
+struct RequestArguments {
+    struct ArgumentNode *head;
+};
+
 enum request_result check_request(const char *req, int size, int *consumed);
-void get_request_from_buffer(const char *buff, int consumed, int buffered, char *dest);
-
-#define REQUEST_LENGTH 14 // len("*1$\r\n4\r\nPING\r\n")
-
-struct request {};
+void get_request_from_buffer(char *buff, int consumed, int buffered, char *dest);
+int convert_string_to_number(const char *start, const char *end, int *res);
+int parse_request(const char *req, int length, struct RequestArguments *request_arguments);
+void add_to_args(struct RequestArguments *request_args, struct ArgumentNode *node);
+void print_args(struct RequestArguments *request_args);
 
 int main() {
-    printf("Hello, World!\n");
 
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -67,7 +80,7 @@ int main() {
         return -1;
     };
     int client_socket = 0;
-    int client_socket_size = sizeof(client_address);
+    socklen_t client_socket_size = sizeof(client_address);
 
     epollfd = epoll_create1(0);
     if (epollfd == -1) {
@@ -106,22 +119,27 @@ int main() {
                     perror("epoll_ctl: conn_sock");
                     exit(1);
                 }
-                printf("DEBUG: Client Connected\n");
+
             } else {
                 struct Client *client = (struct Client *)events[n].data.ptr;
                 int rec_bytes = recv(client->ptr, client->buffer + client->buffered,
                                      sizeof(client->buffer) - client->buffered, 0);
                 client->buffered += rec_bytes;
-
                 while (1) {
                     int consumed = 0;
-                    enum request_result res = check_request(buf, client->buffered, &consumed);
-                    if (res == NEED_MORE_DATA) {
+                    enum request_result res =
+                        check_request(client->buffer, client->buffered, &consumed);
+                    if (res == NEED_MORE_DATA || res == INVALLID) {
                         break;
                     }
-                    get_request_from_buffer(&buf, consumed, client->buffered, queried_data);
-                    client->buffered -= consumed;
+                    get_request_from_buffer(client->buffer, consumed, client->buffered,
+                                            queried_data);
 
+                    client->buffered -= consumed;
+                    struct RequestArguments arguments = {.head = NULL};
+
+                    parse_request(queried_data, consumed, &arguments);
+                    print_args(&arguments);
                     if (send(client->ptr, "+PONG\r\n", 7, 0) < 0) {
                         perror("send");
                         close(client_socket);
@@ -136,18 +154,205 @@ int main() {
 }
 
 // placeholder function to check if we have a full request already pending in req
-enum request_result check_request(const char *req, int size, int *req_len) {
-    if (size < REQUEST_LENGTH) {
+enum request_result check_request(const char *req, int size, int *consumed) {
+    int pos = 0;
+
+    if (size < 1) {
         return NEED_MORE_DATA;
     }
-    *req_len = REQUEST_LENGTH;
+
+    if (req[pos] != '*') {
+        return INVALLID;
+    }
+
+    pos++;
+
+    const char *header_end = memmem(req + pos, size - pos, "\r\n", 2);
+
+    if (!header_end) {
+        return NEED_MORE_DATA;
+    }
+
+    int array_len;
+
+    if (convert_string_to_number(req + pos, header_end - 1, &array_len) != 0) {
+        return INVALLID;
+    }
+
+    pos = header_end - req + 2;
+
+    for (int i = 0; i < array_len; i++) {
+
+        /* Need at least "$...\r\n" */
+        if (pos >= size) {
+            return NEED_MORE_DATA;
+        }
+
+        if (req[pos] != '$') {
+            return INVALLID;
+        }
+
+        pos++;
+
+        const char *length_end = memmem(req + pos, size - pos, "\r\n", 2);
+
+        if (!length_end) {
+            return NEED_MORE_DATA;
+        }
+
+        int len;
+
+        if (convert_string_to_number(req + pos, length_end - 1, &len) != 0) {
+            return INVALLID;
+        }
+
+        /* Move to first byte of bulk string data */
+        pos = length_end - req + 2;
+
+        /*
+         * Need:
+         *
+         * len bytes of value
+         * +
+         * \r\n
+         */
+        if (pos + len + 2 > size) {
+            return NEED_MORE_DATA;
+        }
+
+        /* Verify trailing CRLF */
+        if (req[pos + len] != '\r' || req[pos + len + 1] != '\n') {
+            return INVALLID;
+        }
+
+        /*
+         * Skip:
+         * data + \r\n
+         */
+        pos += len + 2;
+    }
+
+    *consumed = pos;
+
     return SUCCESS;
 }
 
-void get_request_from_buffer(const char *buff, int req_length, int buff_size, char *dest) {
+void get_request_from_buffer(char *buff, int req_length, int buff_size, char *dest) {
     assert(buff_size >= req_length);
-    strncpy(dest, buf, req_length);
-    printf("strlen %d\n", strlen(buff));
-    printf("dest %s\n", dest);
-    memmove(buf, buf + req_length, buff_size - req_length);
+    assert(BUF_SIZE > req_length);
+
+    strncpy(dest, buff, req_length);
+    memmove(buff, buff + req_length, buff_size - req_length);
+    dest[req_length] = '\0';
+}
+
+int convert_string_to_number(const char *start, const char *end, int *res) {
+    int val = 0;
+    while (start <= end) {
+        if (*start < '0' || *start > '9') {
+            return -1;
+        }
+        val = val * 10 + (*start - '0');
+        start++;
+    }
+    *res = val;
+
+    return 0;
+}
+
+int parse_request(const char *req, int request_len, struct RequestArguments *request_arguments) {
+    int pos = 0;
+
+    if (request_len < 1 || req[pos] != '*') {
+        return -1;
+    }
+
+    pos++;
+
+    const char *header_end = memmem(req + pos, request_len - pos, "\r\n", 2);
+
+    if (!header_end) {
+        return -1;
+    }
+
+    int array_len;
+
+    if (convert_string_to_number(req + pos, header_end - 1, &array_len) != 0) {
+        return -1;
+    }
+
+    pos = header_end - req + 2;
+
+    for (int i = 0; i < array_len; i++) {
+        if (pos >= request_len || req[pos] != '$') {
+            return -1;
+        }
+
+        pos++;
+
+        const char *length_end = memmem(req + pos, request_len - pos, "\r\n", 2);
+
+        if (!length_end) {
+            return -1;
+        }
+
+        int arg_len;
+
+        if (convert_string_to_number(req + pos, length_end - 1, &arg_len) != 0) {
+            return -1;
+        }
+
+        pos = length_end - req + 2;
+
+        if (pos + arg_len + 2 > request_len) {
+            return -1;
+        }
+
+        if (req[pos + arg_len] != '\r' || req[pos + arg_len + 1] != '\n') {
+            return -1;
+        }
+
+        struct ArgumentNode *node = malloc(sizeof *node);
+        node->arg_val = malloc(arg_len + 1);
+
+        memcpy(node->arg_val, req + pos, arg_len);
+        node->arg_val[arg_len] = '\0';
+
+        node->size = arg_len;
+        node->next = NULL;
+
+        add_to_args(request_arguments, node);
+
+        pos += arg_len + 2;
+    }
+
+    return 0;
+}
+
+void add_to_args(struct RequestArguments *request_args, struct ArgumentNode *node) {
+    if (request_args->head == NULL) {
+        request_args->head = node;
+        return;
+    }
+    struct ArgumentNode *current_node = request_args->head;
+    while (current_node->next != NULL) {
+        current_node = current_node->next;
+    }
+    current_node->next = node;
+}
+
+void print_args(struct RequestArguments *request_args) {
+    printf("ARGS BEGIN\n");
+
+    struct ArgumentNode *curr = request_args->head;
+    int i = 1;
+
+    while (curr) {
+        printf("%d. %s of length %d\n", i, curr->arg_val, curr->size);
+
+        curr = curr->next;
+        i++;
+    }
+
+    printf("ARGS END\n");
 }
