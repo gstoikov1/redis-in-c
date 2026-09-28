@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/param.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -27,9 +28,14 @@ enum request_result {
     NEED_MORE_DATA,
     INVALLID
 };
+enum Command {
+    ECHO,
+    PING,
+    SET
+};
 
 struct Client {
-    int ptr;
+    int fd;
     char buffer[4096];
     int buffered;
 };
@@ -51,6 +57,7 @@ int convert_string_to_number(const char *start, const char *end, int *res);
 int parse_request(const char *req, int length, struct RequestArguments *request_arguments);
 void add_to_args(struct RequestArguments *request_args, struct ArgumentNode *node);
 void print_args(struct RequestArguments *request_args);
+int handle_request(int client_fd, const struct RequestArguments *args);
 
 int main() {
 
@@ -79,7 +86,7 @@ int main() {
         perror("listen");
         return -1;
     };
-    int client_socket = 0;
+
     socklen_t client_socket_size = sizeof(client_address);
 
     epollfd = epoll_create1(0);
@@ -111,7 +118,7 @@ int main() {
                     exit(1);
                 }
                 struct Client *client = malloc(sizeof(struct Client));
-                client->ptr = conn_sock;
+                client->fd = conn_sock;
                 client->buffered = 0;
                 ev.events = EPOLLIN;
                 ev.data.ptr = client;
@@ -122,7 +129,7 @@ int main() {
 
             } else {
                 struct Client *client = (struct Client *)events[n].data.ptr;
-                int rec_bytes = recv(client->ptr, client->buffer + client->buffered,
+                int rec_bytes = recv(client->fd, client->buffer + client->buffered,
                                      sizeof(client->buffer) - client->buffered, 0);
                 client->buffered += rec_bytes;
                 while (1) {
@@ -139,12 +146,8 @@ int main() {
                     struct RequestArguments arguments = {.head = NULL};
 
                     parse_request(queried_data, consumed, &arguments);
+                    handle_request(client->fd, &arguments);
                     print_args(&arguments);
-                    if (send(client->ptr, "+PONG\r\n", 7, 0) < 0) {
-                        perror("send");
-                        close(client_socket);
-                        break;
-                    }
                 }
             }
         }
@@ -355,4 +358,28 @@ void print_args(struct RequestArguments *request_args) {
     }
 
     printf("ARGS END\n");
+}
+
+int handle_request(int client_fd, const struct RequestArguments *args) {
+    struct ArgumentNode *command_node = args->head;
+
+    const char *command_name = command_node->arg_val;
+    int command_len = command_node->size;
+    if (command_len >= 4 && strncmp(command_name, "PING", 4) == 0) {
+        if (send(client_fd, "+PONG\r\n", 7, 0) < 0) {
+            perror("send");
+            return -1;
+        }
+    } else if (command_len >= 4 && strncmp(command_name, "ECHO", 4) == 0 &&
+               command_node->next != NULL) {
+        struct ArgumentNode *echo_arg = command_node->next;
+
+        char header[64];
+        int header_len = snprintf(header, sizeof(header), "$%d\r\n", echo_arg->size);
+        send(client_fd, header, header_len, 0);
+        send(client_fd, echo_arg->arg_val, echo_arg->size, 0);
+        send(client_fd, "\r\n", 2, 0);
+    }
+
+    return 0;
 }
