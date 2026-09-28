@@ -1,1 +1,1 @@
-gcc -Wall -Wextra -Wpedantic -std=c17 -g src/*.c -o redis-server
+gcc -g -O0 -Wall -Wextra -Wpedantic -std=c17 -g src/*.c -o redis-server
