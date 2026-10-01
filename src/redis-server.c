@@ -60,52 +60,32 @@ int parse_request(const char *req, int length, struct RequestArguments *request_
 void add_to_args(struct RequestArguments *request_args, struct ArgumentNode *node);
 void print_args(struct RequestArguments *request_args);
 int handle_request(int client_fd, const struct RequestArguments *args);
+int init_server_socket();
 
 int main() {
     if (init(&table, 1024)) {
         return -1;
     }
 
-    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
-
-    if (server_socket <= 0) {
-        perror("socket");
-        return -1;
+    int server_socket = init_server_socket();
+    if (server_socket == -1) {
+        perror("init server socket");
+        return 1;
     }
-
-    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
-        perror("setsockopt");
-        return -1;
-    }
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
-
-    if (bind(server_socket, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("bind");
-        close(server_socket);
-        return -1;
-    }
-    if (listen(server_socket, 0)) {
-        perror("listen");
-        return -1;
-    };
-
-    socklen_t client_socket_size = sizeof(client_address);
-
     epollfd = epoll_create1(0);
     if (epollfd == -1) {
-        perror("epoll_create1");
-        exit(1);
+        close(server_socket);
+        return -1;
     }
     ev.events = EPOLLIN;
     ev.data.fd = server_socket;
 
     if (epoll_ctl(epollfd, EPOLL_CTL_ADD, server_socket, &ev) == -1) {
-        perror("epoll_ctl: server_socket");
-        exit(1);
+        close(server_socket);
+        close(epollfd);
+        return -1;
     }
+    socklen_t client_socket_size = sizeof(client_address);
 
     for (;;) {
         nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
@@ -152,7 +132,6 @@ int main() {
 
                     parse_request(queried_data, consumed, &arguments);
                     handle_request(client->fd, &arguments);
-                    print_args(&arguments);
                 }
             }
         }
@@ -418,4 +397,32 @@ int handle_request(int client_fd, const struct RequestArguments *args) {
     }
 
     return 0;
+}
+
+int init_server_socket() {
+    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (server_socket <= 0) {
+        return -1;
+    }
+
+    if (setsockopt(server_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt))) {
+        close(server_socket);
+        return -1;
+    }
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+
+    if (bind(server_socket, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        close(server_socket);
+        return -1;
+    }
+
+    if (listen(server_socket, 0)) {
+        return -1;
+    };
+
+    return server_socket;
 }
