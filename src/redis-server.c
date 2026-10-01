@@ -1,5 +1,6 @@
 #define _GNU_SOURCE // needed for memmem
 
+#include "hash_table.h"
 #include <assert.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -18,6 +19,7 @@ struct sockaddr client_address;
 int opt = 1;
 char buf[BUF_SIZE] = {0};
 char queried_data[BUF_SIZE] = {0};
+Table table;
 
 #define MAX_EVENTS 10
 struct epoll_event ev, events[MAX_EVENTS];
@@ -60,6 +62,9 @@ void print_args(struct RequestArguments *request_args);
 int handle_request(int client_fd, const struct RequestArguments *args);
 
 int main() {
+    if (init(&table, 1024)) {
+        return -1;
+    }
 
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -156,7 +161,6 @@ int main() {
     return 0;
 }
 
-// placeholder function to check if we have a full request already pending in req
 enum request_result check_request(const char *req, int size, int *consumed) {
     int pos = 0;
 
@@ -379,6 +383,20 @@ int handle_request(int client_fd, const struct RequestArguments *args) {
         send(client_fd, header, header_len, 0);
         send(client_fd, echo_arg->arg_val, echo_arg->size, 0);
         send(client_fd, "\r\n", 2, 0);
+    } else if (command_len >= 3 && strncmp(command_name, "SET", 3) == 0) {
+        struct ArgumentNode *name_node = command_node->next;
+        if (name_node == NULL) {
+            return -1;
+        }
+        struct ArgumentNode *value_node = name_node->next;
+        if (value_node == NULL) {
+            return -1;
+        }
+
+        if (add(&table, name_node->arg_val, name_node->size, value_node->arg_val,
+                value_node->size) == 0) {
+            send(client_fd, "+OK\r\n", 5, 0);
+        }
     }
 
     return 0;
