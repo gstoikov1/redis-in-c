@@ -7,7 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
-#include <sys/param.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -42,12 +41,12 @@ struct Client {
     int buffered;
 };
 
-struct ArgumentNode {
+typedef struct ArgumentNode {
     char *arg_val;
     int size;
 
     struct ArgumentNode *next;
-};
+} ArgumentNode;
 
 struct RequestArguments {
     struct ArgumentNode *head;
@@ -396,6 +395,19 @@ int handle_request(int client_fd, const struct RequestArguments *args) {
         if (add(&table, name_node->arg_val, name_node->size, value_node->arg_val,
                 value_node->size) == 0) {
             send(client_fd, "+OK\r\n", 5, 0);
+        }
+    } else if (command_len >= 3 && strncmp(command_name, "GET", 3) == 0 &&
+               command_node->next != NULL) {
+        ArgumentNode *name_node = command_node->next;
+        Entry *e = get(&table, name_node->arg_val, name_node->size);
+        if (e) {
+            char header[1024];
+            int header_len = snprintf(header, sizeof(header), "$%d\r\n", e->value_len);
+            send(client_fd, header, header_len, 0);
+            send(client_fd, e->value, e->value_len, 0);
+            send(client_fd, "\r\n", 2, 0);
+        } else {
+            send(client_fd, "$-1\r\n", 5, 0);
         }
     }
 

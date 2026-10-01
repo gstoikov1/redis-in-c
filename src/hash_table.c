@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/param.h>
 
 uint64_t hash_bytes(const char *data, size_t length);
 
@@ -113,4 +114,18 @@ uint64_t hash_bytes(const char *data, size_t length) {
     }
 
     return hash;
+}
+
+Entry *get(Table *table, const char *key, size_t key_len) {
+    uint64_t hash = hash_bytes(key, key_len);
+    int index = hash % table->size;
+    Entry *e = table->entries[index];
+    while (e) {
+        if (strncmp(e->key, key, MIN(e->key_len, key_len)) == 0) {
+            return e;
+        }
+        e = e->next;
+    }
+
+    return NULL;
 }
