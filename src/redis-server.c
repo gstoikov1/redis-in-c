@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #define PORT 6379
@@ -391,9 +392,14 @@ int handle_request(int client_fd, const struct RequestArguments *args) {
         if (value_node == NULL) {
             return -1;
         }
-
-        if (add(&table, name_node->arg_val, name_node->size, value_node->arg_val,
-                value_node->size) == 0) {
+        ArgumentNode *px_node = value_node->next;
+        int exp_time = 0;
+        if (px_node != NULL && px_node->next != NULL) {
+            ArgumentNode *px_time_node = px_node->next;
+            exp_time = atoi(px_time_node->arg_val);
+        }
+        if (add(&table, name_node->arg_val, name_node->size, value_node->arg_val, value_node->size,
+                exp_time) == 0) {
             send(client_fd, "+OK\r\n", 5, 0);
         }
     } else if (command_len >= 3 && strncmp(command_name, "GET", 3) == 0 &&

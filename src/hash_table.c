@@ -1,11 +1,14 @@
-#include "hash_table.h"
+#define _POSIX_C_SOURCE 200809L
 
+#include "hash_table.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
+#include <time.h>
 
 uint64_t hash_bytes(const char *data, size_t length);
+int64_t current_time_ms();
 
 int init(Table *table, size_t initial_size) {
     if (table == NULL) {
@@ -43,7 +46,8 @@ void free_entries(Entry **entries, size_t size) {
     free(entries);
 }
 
-int add(Table *table, const char *key, size_t key_len, const char *value, size_t value_len) {
+int add(Table *table, const char *key, size_t key_len, const char *value, size_t value_len,
+        int exp_time) {
     if (table == NULL || key == NULL || value == NULL) {
         return -1;
     }
@@ -69,7 +73,11 @@ int add(Table *table, const char *key, size_t key_len, const char *value, size_t
 
             current->value = new_value;
             current->value_len = value_len;
-
+            if (exp_time > 0) {
+                time_t currentTime;
+                time(&currentTime);
+                exp_time = currentTime + exp_time;
+            }
             return 0;
         }
 
@@ -99,6 +107,10 @@ int add(Table *table, const char *key, size_t key_len, const char *value, size_t
     new_entry->key_len = key_len;
     new_entry->value_len = value_len;
 
+    if (exp_time > 0) {
+        exp_time = current_time_ms() + exp_time;
+    }
+    new_entry->exp_time = exp_time;
     // Insert at the beginning of the collision chain
     new_entry->next = table->entries[index];
     table->entries[index] = new_entry;
@@ -122,10 +134,24 @@ Entry *get(Table *table, const char *key, size_t key_len) {
     Entry *e = table->entries[index];
     while (e) {
         if (strncmp(e->key, key, MIN(e->key_len, key_len)) == 0) {
-            return e;
+            int64_t currentTime = current_time_ms();
+
+            if (e->exp_time <= 0 || currentTime < e->exp_time) {
+                return e;
+            } else {
+                break;
+            }
         }
         e = e->next;
     }
 
     return NULL;
+}
+
+int64_t current_time_ms() {
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
